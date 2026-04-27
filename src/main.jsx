@@ -6,13 +6,13 @@ import {
   LucideCpu, LucideInfo 
 } from 'lucide-react';
 
-// --- TAILWIND INJECTION HACK (Fixt den weißen Bildschirm) ---
+// --- TAILWIND INJECTION HACK ---
 if (!document.getElementById('tailwind-cdn')) {
   const tailwindScript = document.createElement('script');
   tailwindScript.id = 'tailwind-cdn';
   tailwindScript.src = "https://cdn.tailwindcss.com";
   document.head.appendChild(tailwindScript);
-  document.body.style.backgroundColor = "#09090b"; // Sofort dunkler Hintergrund
+  document.body.style.backgroundColor = "#09090b";
 }
 // -------------------------------------------------------------
 
@@ -44,17 +44,6 @@ const App = () => {
   const [error, setError] = useState(null);
   const scrollRef = useRef(null);
 
-  const fetchWithRetry = async (url, options, maxRetries = 3) => {
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) return await response.json();
-      } catch (err) { if (i === maxRetries - 1) throw err; }
-      await new Promise(r => setTimeout(r, 1500));
-    }
-    throw new Error("Mainframe-Timeout.");
-  };
-
   const parseOptions = (text) => {
     const regex = /([A-D])\)\s(.*?)\((?:Kapital|Fokus):\s?(.*?)\s?\|\s?Habitus:\s?(.*?)\)/g;
     const options = [];
@@ -66,19 +55,39 @@ const App = () => {
   };
 
   const executeTurn = async (userChoice) => {
-    if (!apiKey) { setError("Kritisch: API-Key fehlt!"); return; }
+    if (!apiKey) { 
+      setError("Kritisch: API-Key fehlt in den Vercel Environment Variables!"); 
+      return; 
+    }
+    
     setLoading(true);
     setError(null);
+    
     try {
-      const imgPrompt = `Cinematic Cyberpunk-Steampunk Berlin fusion. Moody, industrial, rusty machinery. 9:16 portrait. ${round >= 8 ? 'Heavy glitch artifacts, matrix code leaks.' : ''} Scene: ${userChoice}`;
-      const imgRes = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`, {
-        method: 'POST',
-        body: JSON.stringify({ instances: { prompt: imgPrompt }, parameters: { sampleCount: 1 } })
-      });
-      const imageUrl = imgRes.predictions?.[0]?.bytesBase64Encoded ? `data:image/png;base64,${imgRes.predictions[0].bytesBase64Encoded}` : null;
+      let imageUrl = null;
+      
+      // 1. Versuche Bild zu generieren (Sicherheitsnetz: Falls Fehler, einfach ignorieren)
+      try {
+        const imgPrompt = `Cinematic Cyberpunk-Steampunk Berlin fusion. Moody, industrial, rusty machinery. 9:16 portrait. ${round >= 8 ? 'Heavy glitch artifacts, matrix code leaks.' : ''} Scene: ${userChoice}`;
+        const imgRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instances: { prompt: imgPrompt }, parameters: { sampleCount: 1 } })
+        });
+        
+        if (imgRes.ok) {
+          const imgData = await imgRes.json();
+          if (imgData.predictions?.[0]?.bytesBase64Encoded) {
+            imageUrl = `data:image/png;base64,${imgData.predictions[0].bytesBase64Encoded}`;
+          }
+        }
+      } catch (e) {
+        console.log("Bildgenerierung übersprungen.");
+      }
 
+      // 2. Text generieren (mit dem ECHTEN, aktuellen Gemini 1.5 Modell)
       const context = `Runde: ${round}/10, Kapital: ${capital}, Habitus: ${habitus}, Stress: ${tLoad}. Input: ${userChoice}`;
-      const textRes = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      const textRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -87,12 +96,22 @@ const App = () => {
         })
       });
 
-      const responseText = textRes.candidates?.[0]?.content?.parts?.[0]?.text || "Systemfehler.";
+      if (!textRes.ok) {
+        throw new Error("Google API hat die Anfrage abgelehnt (Falscher Key oder Limit erreicht).");
+      }
+
+      const textData = await textRes.json();
+      const responseText = textData.candidates?.[0]?.content?.parts?.[0]?.text || "Systemfehler.";
+      
       setHistory(prev => [...prev, { text: responseText, image: imageUrl, options: parseOptions(responseText), round }]);
       setRound(r => r + 1);
       setTLoad(t => Math.min(100, t + (round === 0 ? 0 : 8 + Math.floor(Math.random() * 6))));
-    } catch (err) { setError("Verbindung zum Sektor 4 Protokoll unterbrochen."); }
-    setLoading(false);
+      
+    } catch (err) { 
+      setError(err.message || "Verbindung zum Sektor 4 Protokoll unterbrochen."); 
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleChoice = (opt) => {
@@ -140,7 +159,7 @@ const App = () => {
             <div key={i} className="animate-in fade-in slide-in-from-bottom-8 duration-1000">
               {entry.image && (
                 <div className="mb-10 border border-zinc-800 bg-black p-1 shadow-2xl relative">
-                  <img src={entry.image} className="w-full aspect-[9/16] max-h-[450px] object-cover grayscale-[0.3]" />
+                  <img src={entry.image} alt="Visual Feed" className="w-full aspect-[9/16] max-h-[450px] object-cover grayscale-[0.3]" />
                   <div className="absolute top-4 left-4 bg-black/80 px-2 py-1 text-[8px] text-orange-500 font-bold tracking-[0.3em] border border-orange-900/50">LIVE_FEED_0{entry.round}</div>
                 </div>
               )}
@@ -192,4 +211,3 @@ const App = () => {
 const container = document.getElementById('root');
 const root = createRoot(container);
 root.render(<App />);
-  
